@@ -85,11 +85,41 @@ int
 atoi(const char *s)
 {
   int n;
-
+  int sign = 1;
+  // Parse an optional sign before the digits.
+  if(*s == '-') {
+    sign = -1;
+    s++;
+  }
   n = 0;
   while('0' <= *s && *s <= '9')
     n = n*10 + *s++ - '0';
-  return n;
+  return n * sign;
+}
+
+double
+atof(const char *s)
+{
+  double n;
+  int sign = 1;
+  // Parse the whole and fractional parts separately.
+  if(*s == '-') {
+    sign = -1;
+    s++;
+  }
+  n = 0;
+  while(*s != '.' && '0' <= *s && *s <= '9')
+    n = n*10 + *s++ - '0';
+  if(*s == '.') {
+    s++;
+    double decimal_place = 0.1;
+    // Each following digit uses the next decimal place.
+    while('0' <= *s && *s <= '9') {
+      n += (*s++ - '0') * decimal_place;
+      decimal_place *= 0.1;
+    }
+  }
+  return n * sign;
 }
 
 void*

@@ -25,6 +25,7 @@ printint(int fd, int xx, int base, int sgn)
   }
 
   i = 0;
+  // Digits are extracted from least significant to most significant.
   do{
     buf[i++] = digits[x % base];
   }while((x /= base) != 0);
@@ -35,7 +36,49 @@ printint(int fd, int xx, int base, int sgn)
     putc(fd, buf[i]);
 }
 
-// Print to the given fd. Only understands %d, %x, %p, %s.
+static void
+printfloat(int fd, double x) {
+  int negative = 0;
+  if (x < 0) {
+    negative = 1;
+    x = -x;
+  }
+  int intPart = (int)x;
+  double fracPart = x - intPart;
+  // Round to six fractional digits before formatting.
+  uint fractional = (uint)(fracPart * 1000000.0 + 0.5);
+
+  // Rounding can carry into the integer part.
+  if(fractional == 1000000){
+    intPart++;
+    fractional = 0;
+  }
+
+  if(negative && (intPart != 0 || fractional != 0))
+    putc(fd, '-');
+  printint(fd, intPart, 10, 0);
+  if(fractional == 0)
+    return;
+
+  // Remove insignificant zeros from the fractional part.
+  int digits = 6;
+  while(fractional % 10 == 0){
+    fractional /= 10;
+    digits--;
+  }
+
+  putc(fd, '.');
+  uint divisor = 1;
+  for(int i = 1; i < digits; i++)
+    divisor *= 10;
+
+  for(; divisor > 0; divisor /= 10){
+    putc(fd, '0' + fractional / divisor);
+    fractional %= divisor;
+  }
+}
+
+// Print to the given fd. Only understands %d, %f, %x, %p, %s.
 void
 printf(int fd, const char *fmt, ...)
 {
@@ -44,6 +87,7 @@ printf(int fd, const char *fmt, ...)
   uint *ap;
 
   state = 0;
+  // Variadic arguments are words; a double occupies two words.
   ap = (uint*)(void*)&fmt + 1;
   for(i = 0; fmt[i]; i++){
     c = fmt[i] & 0xff;
@@ -57,6 +101,9 @@ printf(int fd, const char *fmt, ...)
       if(c == 'd'){
         printint(fd, *ap, 10, 1);
         ap++;
+      } else if(c == 'f'){
+        printfloat(fd, *(double*)ap);
+        ap += 2; // Move the pointer by 2 because double takes 2 uints
       } else if(c == 'x' || c == 'p'){
         printint(fd, *ap, 16, 0);
         ap++;
