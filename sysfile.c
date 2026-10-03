@@ -442,3 +442,72 @@ sys_pipe(void)
   fd[1] = fd1;
   return 0;
 }
+
+static int
+get_curr_dir_name(struct inode* cwd, char* buf, int size) {
+  if(cwd->dev == ROOTDEV && cwd->inum == ROOTINO) {
+    safestrcpy(buf, "/", size);
+    return 0;
+  }
+
+  ilock(cwd);
+  struct inode *parent = dirlookup(cwd, "..", 0);
+  iunlock(cwd);
+  if(parent == 0)
+    return -1;
+
+  if(get_curr_dir_name(parent, buf, size) < 0){
+    iput(parent);
+    return -1;
+  }
+
+  ilock(parent);
+  struct dirent de;
+  int found = 0;
+  for(uint off = 0; off < parent->size; off += sizeof(de)) {
+    if(readi(parent, (char*)&de, off, sizeof(de)) != sizeof(de))
+      panic("getcwd readi");
+
+    if(de.inum == cwd->inum){
+      // This entry points to current.
+      // de.name is its directory name.
+      int len = strlen(buf);
+      char name[DIRSIZ + 1];
+      memmove(name, de.name, DIRSIZ);
+      name[DIRSIZ] = 0; // Null-terminate the name to avoid buffer overflows.
+      int backslash_needed = (len > 1 ? 1 : 0);
+      int extra = strlen(name) + backslash_needed;      
+      if(len + extra + 1 > size) {
+        iunlock(parent);
+        iput(parent);
+        return -1;
+      }
+      if(backslash_needed)
+        safestrcpy(buf + len, "/", size - len);
+      safestrcpy(buf + len + backslash_needed, name,
+                 size - len - backslash_needed);
+      found = 1;
+      break;
+    }
+  }
+  iunlock(parent);
+  iput(parent);
+  return found ? 0 : -1;
+}
+
+int
+sys_getcwd(void)
+{
+  char *buf;
+  int size;
+
+  if (argint(1, &size) < 0 || size <= 0 ||
+      argptr(0, &buf, size) < 0) {
+    return -1;
+  }
+
+  struct proc *curproc = myproc();
+  struct inode *cwd = curproc->cwd;
+
+  return get_curr_dir_name(cwd, buf, size);
+}
