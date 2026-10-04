@@ -25,6 +25,7 @@ int sleep(int);
 int uptime(void);
 int getcwd(char *buf, int size);
 int rename(const char *old, const char *new);
+int date(struct rtcdate*);
 
 // ulib.c
 int stat(const char*, struct stat*);

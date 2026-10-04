@@ -105,6 +105,7 @@ extern int sys_write(void);
 extern int sys_uptime(void);
 extern int sys_getcwd(void);
 extern int sys_rename(void);
+extern int sys_date(void);
 
 static int (*syscalls[])(void) = {
 [SYS_fork]    sys_fork,
@@ -130,6 +131,7 @@ static int (*syscalls[])(void) = {
 [SYS_close]   sys_close,
 [SYS_getcwd]  sys_getcwd,
 [SYS_rename]  sys_rename,
+[SYS_date]    sys_date,
 };
 
 void
