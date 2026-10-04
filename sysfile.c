@@ -511,3 +511,169 @@ sys_getcwd(void)
 
   return get_curr_dir_name(cwd, buf, size);
 }
+
+int
+sys_rename(void)
+{
+  char *oldpath, *newpath;
+  char old_name[DIRSIZ], new_name[DIRSIZ];
+  struct inode *old_parent = 0, *old_inode = 0, *new_parent = 0, *existing = 0;
+  struct inode *ip, *next;
+  struct dirent de;
+  uint off;
+  int old_isdir, ex_isdir = 0, ret = -1;
+
+  if(argstr(0, &oldpath) < 0 || argstr(1, &newpath) < 0)
+    return -1;
+  if(strlen(oldpath) == strlen(newpath) &&
+     memcmp(oldpath, newpath, strlen(oldpath) + 1) == 0)
+    return 0;
+
+  begin_op();
+
+  old_parent = nameiparent(oldpath, old_name);
+  if(old_parent == 0)
+    goto done;
+
+  old_inode = namei(oldpath);
+  if(old_inode == 0)
+    goto done;
+
+  new_parent = nameiparent(newpath, new_name);
+  if(new_parent == 0)
+    goto done;
+
+  // Never rename "." or ".." (either side)
+  if(strncmp(old_name, ".", DIRSIZ) == 0 || strncmp(old_name, "..", DIRSIZ) == 0 ||
+     strncmp(new_name, ".", DIRSIZ) == 0 || strncmp(new_name, "..", DIRSIZ) == 0)
+    goto done;
+
+  ilock(old_inode);
+  old_isdir = (old_inode->type == T_DIR);
+  iunlock(old_inode);
+
+  // A directory must not be moved into its own subtree:
+  // walk up from new_parent via ".." and make sure we never meet old_inode.
+  if(old_isdir) {
+    ip = idup(new_parent);
+    while(1) {
+      if(ip->inum == old_inode->inum) {
+        iput(ip);
+        goto done;
+      }
+      if(ip->inum == ROOTINO) {
+        iput(ip);
+        break;
+      }
+      ilock(ip);
+      next = dirlookup(ip, "..", 0);
+      iunlockput(ip);
+      if(next == 0)
+        goto done;
+      ip = next;
+    }
+  }
+
+  existing = namei(newpath);
+  if(existing != 0) {
+    // Same inode (e.g. "a" -> "./a" or hard links): nothing to do
+    if(existing->inum == old_inode->inum) {
+      ret = 0;
+      goto done;
+    }
+
+    ilock(existing);
+    ex_isdir = (existing->type == T_DIR);
+    // Type must match; a directory victim must be empty
+    if(ex_isdir != old_isdir || (ex_isdir && !isdirempty(existing))) {
+      iunlock(existing);
+      goto done;
+    }
+    iunlock(existing);
+
+    // Overwrite the destination entry in place (cannot fail after this point)
+    ilock(new_parent);
+    for(off = 0; off < new_parent->size; off += sizeof(de)) {
+      if(readi(new_parent, (char*)&de, off, sizeof(de)) != sizeof(de))
+        panic("rename readi");
+      if(de.inum != 0 && strncmp(de.name, new_name, DIRSIZ) == 0) {
+        de.inum = old_inode->inum;
+        if(writei(new_parent, (char*)&de, off, sizeof(de)) != sizeof(de))
+          panic("rename writei");
+        break;
+      }
+    }
+    iunlock(new_parent);
+
+    // The victim lost its link; iput() below frees it if nlink hits 0
+    ilock(existing);
+    existing->nlink--;
+    iupdate(existing);
+    iunlock(existing);
+
+    // A removed directory's ".." no longer points at new_parent
+    if(ex_isdir) {
+      ilock(new_parent);
+      new_parent->nlink--;
+      iupdate(new_parent);
+      iunlock(new_parent);
+    }
+  } else {
+    // Nothing destroyed yet, so failing here is safe
+    ilock(new_parent);
+    int link_result = dirlink(new_parent, new_name, old_inode->inum);
+    iunlock(new_parent);
+    if(link_result < 0)
+      goto done;
+  }
+
+  // Remove the old entry
+  ilock(old_parent);
+  for(off = 0; off < old_parent->size; off += sizeof(de)) {
+    if(readi(old_parent, (char*)&de, off, sizeof(de)) != sizeof(de))
+      panic("rename readi");
+    if(de.inum == old_inode->inum &&
+       strncmp(de.name, old_name, DIRSIZ) == 0) {
+      memset(&de, 0, sizeof(de));
+      if(writei(old_parent, (char*)&de, off, sizeof(de)) != sizeof(de))
+        panic("rename writei");
+      break;
+    }
+  }
+  iunlock(old_parent);
+
+  // Moving a directory to a different parent: fix ".." and parent link counts
+  if(old_isdir && old_parent->inum != new_parent->inum) {
+    ilock(old_inode);
+    for(off = 0; off < old_inode->size; off += sizeof(de)) {
+      if(readi(old_inode, (char*)&de, off, sizeof(de)) != sizeof(de))
+        panic("rename readi");
+      if(strncmp(de.name, "..", DIRSIZ) == 0) {
+        de.inum = new_parent->inum;
+        if(writei(old_inode, (char*)&de, off, sizeof(de)) != sizeof(de))
+          panic("rename writei");
+        break;
+      }
+    }
+    iunlock(old_inode);
+
+    ilock(old_parent);
+    old_parent->nlink--;
+    iupdate(old_parent);
+    iunlock(old_parent);
+
+    ilock(new_parent);
+    new_parent->nlink++;
+    iupdate(new_parent);
+    iunlock(new_parent);
+  }
+  ret = 0;
+
+done:
+  if(existing)   iput(existing);
+  if(new_parent) iput(new_parent);
+  if(old_inode)  iput(old_inode);
+  if(old_parent) iput(old_parent);
+  end_op();
+  return ret;
+}
